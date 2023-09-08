@@ -56,24 +56,22 @@ def train(hyp, opt, device):
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
 
     nc = int(data_dict['nc'])  # number of classes
-    
     names = data_dict['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
     # Model
-    pretrained = weights.endswith('.pt')
-    if pretrained:
-        with torch_distributed_zero_first(rank):
-            attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-        exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) else []  # exclude keys
-        state_dict = ckpt['model'].float().state_dict()  # to FP32
-        state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
-        model.load_state_dict(state_dict, strict=False)  # load
-        logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
-    else:
-        model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+    assert weights.endswith('.pt'), "Model not pretrained"
+        
+    with torch_distributed_zero_first(rank):
+        attempt_download(weights)  # download if not found locally
+    ckpt = torch.load(weights, map_location=device)  # load checkpoint
+    model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+    exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) else []  # exclude keys
+    state_dict = ckpt['model'].float().state_dict()  # to FP32
+    state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
+    model.load_state_dict(state_dict, strict=False)  # load
+    logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
+        
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
@@ -168,29 +166,29 @@ def train(hyp, opt, device):
 
     # Resume
     start_epoch, best_fitness = 0, 0.0
-    if pretrained:
-        # Optimizer
-        if ckpt['optimizer'] is not None:
-            optimizer.load_state_dict(ckpt['optimizer'])
-            best_fitness = ckpt['best_fitness']
+    
+    # Optimizer
+    if ckpt['optimizer'] is not None:
+        optimizer.load_state_dict(ckpt['optimizer'])
+        best_fitness = ckpt['best_fitness']
 
-        # EMA
-        if ema and ckpt.get('ema'):
-            ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
-            ema.updates = ckpt['updates']
+    # EMA
+    if ema and ckpt.get('ema'):
+        ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
+        ema.updates = ckpt['updates']
 
-        # Results
-        if ckpt.get('training_results') is not None:
-            results_file.write_text(ckpt['training_results'])  # write results.txt
+    # Results
+    if ckpt.get('training_results') is not None:
+        results_file.write_text(ckpt['training_results'])  # write results.txt
 
-        # Epochs
-        start_epoch = ckpt['epoch'] + 1
-        if epochs < start_epoch:
-            logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
-                        (weights, ckpt['epoch'], epochs))
-            epochs += ckpt['epoch']  # finetune additional epochs
+    # Epochs
+    start_epoch = ckpt['epoch'] + 1
+    if epochs < start_epoch:
+        logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
+                    (weights, ckpt['epoch'], epochs))
+        epochs += ckpt['epoch']  # finetune additional epochs
 
-        del ckpt, state_dict
+    del ckpt, state_dict
 
     # Image sizes
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
