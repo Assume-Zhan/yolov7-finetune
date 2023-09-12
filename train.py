@@ -17,38 +17,39 @@ from tqdm import tqdm
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, labels_to_image_weights, init_seeds, check_dataset, \
-    check_file, check_img_size, set_logging, one_cycle, colorstr
+from utils.general import labels_to_class_weights, init_seeds, check_dataset, check_img_size, set_logging, one_cycle
 from utils.loss import ComputeLossOTA
-from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
+from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 1
 
-def train(hyp, opt, device):
+def train(hyp, device):
     
     total_batch_size = batch_size = BATCH_SIZE
     epochs = 1
-    weights = './weight/yolov7x_training.pt'
     rank = -1
+    weights = './weight/yolov7x_training.pt'
+    data_yaml = "data/Aquarium/data.yaml"
+    cfg_yaml = "cfg/training/yolov7.yaml"
 
     # Configure
     cuda = device.type != 'cpu'
     init_seeds(2 + rank)
-    with open(opt.data) as f:
+    with open(data_yaml) as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
 
     nc = int(data_dict['nc'])  # number of classes
     names = data_dict['names']  # class names
 
-    # Model
+    # Check Model
     assert weights.endswith('.pt'), "Model not pretrained"
     assert Path(str(weights).strip().replace("'", '').lower()).exists(), "Model not exists"
  
     ckpt = torch.load(weights, map_location=device)  # load checkpoint
-    model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-    exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) else []  # exclude keys
+    model = Model(cfg_yaml or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+    exclude = ['anchor'] if (cfg_yaml or hyp.get('anchors')) else []  # exclude keys
     state_dict = ckpt['model'].float().state_dict()  # to FP32
     state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
     model.load_state_dict(state_dict, strict=False)  # load
@@ -155,28 +156,13 @@ def train(hyp, opt, device):
     # Image sizes
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
     nl = model.model[-1].nl  # number of detection layers (used for scaling hyp['obj'])
-    imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
-
-    dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt, hyp=hyp, augment=True, 
-                                            world_size=opt.world_size, prefix=colorstr('train: '))
-    
-    # Check legal label count
-    mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
+    imgsz, imgsz_test = [check_img_size(x, gs) for x in [640, 640]]  # verify imgsz are gs-multiples
+    dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, hyp=hyp, augment=True)
     nb = len(dataloader)  # number of batches
-    assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
-
-    # Process 0
-    if rank in [-1, 0]:
-        testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
-                                       hyp=hyp, cache=False, rect=True, rank=-1,
-                                       world_size=opt.world_size, pad=0.5, prefix=colorstr('val: '))[0]
-
-        labels = np.concatenate(dataset.labels, 0)
-        c = torch.tensor(labels[:, 0])  # classes
-
-        # Anchors
-        check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
-        model.half().float()  # pre-reduce anchor precision
+    
+    # Anchors
+    check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
+    model.half().float()  # pre-reduce anchor precision
 
     # Model parameters
     hyp['box'] *= 3. / nl  # scale to layers
@@ -207,8 +193,6 @@ def train(hyp, opt, device):
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
                 loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
-                if rank != -1:
-                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
 
             # Backward
             scaler.scale(loss).backward()
@@ -230,29 +214,11 @@ def train(hyp, opt, device):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
-    parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
-    opt = parser.parse_args()
-
-    # Set DDP variables
-    opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
     set_logging(-1)
-
-    # Check hyperparameters and optional files
-    opt.data, opt.cfg, opt.hyp = "data/Aquarium/data.yaml", "cfg/training/yolov7.yaml", "data/hyp.scratch.p5.yaml"
-    
-    # Prevent input size is wrong
-    opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
-
-    # DDP mode
     device = select_device('0', batch_size=BATCH_SIZE)
 
     # Hyperparameters
-    with open(opt.hyp) as f:
+    with open("data/hyp.scratch.p5.yaml") as f:
         hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
 
-    # Train
-    logger.info(opt)
-
-    train(hyp, opt, device)
+    train(hyp, device)
