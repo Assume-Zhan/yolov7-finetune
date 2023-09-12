@@ -19,16 +19,19 @@ from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
 from utils.general import labels_to_class_weights, labels_to_image_weights, init_seeds, check_dataset, \
     check_file, check_img_size, set_logging, one_cycle, colorstr
-from utils.google_utils import attempt_download
 from utils.loss import ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 
 logger = logging.getLogger(__name__)
 
+BATCH_SIZE = 1
+
 def train(hyp, opt, device):
-    logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
-    epochs, batch_size, total_batch_size, weights, rank = \
-        opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank
+    
+    total_batch_size = batch_size = BATCH_SIZE
+    epochs = 1
+    weights = './weight/yolov7x_training.pt'
+    rank = -1
 
     # Configure
     cuda = device.type != 'cpu'
@@ -38,22 +41,19 @@ def train(hyp, opt, device):
 
     nc = int(data_dict['nc'])  # number of classes
     names = data_dict['names']  # class names
-    assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
     # Model
     assert weights.endswith('.pt'), "Model not pretrained"
-        
-    with torch_distributed_zero_first(rank):
-        attempt_download(weights)  # download if not found locally
+    assert Path(str(weights).strip().replace("'", '').lower()).exists(), "Model not exists"
+ 
     ckpt = torch.load(weights, map_location=device)  # load checkpoint
     model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) else []  # exclude keys
     state_dict = ckpt['model'].float().state_dict()  # to FP32
     state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
     model.load_state_dict(state_dict, strict=False)  # load
-        
-    with torch_distributed_zero_first(rank):
-        check_dataset(data_dict)  # check
+    
+    check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
 
@@ -231,32 +231,22 @@ def train(hyp, opt, device):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='yolo7.pt', help='initial weights path')
-    parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
-    parser.add_argument('--data', type=str, default='data/coco.yaml', help='data.yaml path')
-    parser.add_argument('--hyp', type=str, default='data/hyp.scratch.p5.yaml', help='hyperparameters path')
-    parser.add_argument('--epochs', type=int, default=300)
-    parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
-    parser.add_argument('--upload_dataset', action='store_true', help='Upload dataset as W&B artifact table')
     parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
     opt = parser.parse_args()
 
     # Set DDP variables
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
-    opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1
-    set_logging(opt.global_rank)
+    set_logging(-1)
 
     # Check hyperparameters and optional files
-    opt.data, opt.cfg, opt.hyp = check_file(opt.data), check_file(opt.cfg), check_file(opt.hyp)  # check files
-    assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
+    opt.data, opt.cfg, opt.hyp = "data/Aquarium/data.yaml", "cfg/training/yolov7.yaml", "data/hyp.scratch.p5.yaml"
     
     # Prevent input size is wrong
     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
 
     # DDP mode
-    opt.total_batch_size = opt.batch_size
-    device = select_device('0', batch_size=opt.batch_size)
+    device = select_device('0', batch_size=BATCH_SIZE)
 
     # Hyperparameters
     with open(opt.hyp) as f:
