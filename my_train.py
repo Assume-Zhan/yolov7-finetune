@@ -16,9 +16,9 @@ import test
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, check_img_size, set_logging, one_cycle, fitness, increment_path
+from utils.general import labels_to_class_weights, check_img_size, one_cycle, fitness, increment_path
 from utils.loss import ComputeLossOTA, ComputeLoss
-from utils.torch_utils import ModelEMA, select_device, intersect_dicts
+from utils.torch_utils import ModelEMA, intersect_dicts
 
 # Setup hyper-parameters
 class Settings():
@@ -26,14 +26,14 @@ class Settings():
         self.stride = 32
         self.path = "/yolov7/data/Aquarium/train/images"
         self.image_size, self.imgsz_test = [check_img_size(x, self.stride) for x in [640, 640]]
-        self.batch_size = 8
+        self.batch_size = 1
         self.anchor_t = 4
 
 # train function
 def train():
     weights = './weight/yolov7x_training.pt'
-    device = 'cuda:0'
-    epochs = 5
+    device = 'cuda'
+    epochs = 1
     
     with open("data/hyp.scratch.p5.yaml") as f:
         hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
@@ -52,6 +52,8 @@ def train():
     state_dict = intersect_dicts(ckpt['model'].float().state_dict(), model.state_dict(), exclude=['anchor'])
     model.load_state_dict(state_dict, strict=False)
     
+    dataloader, dataset = create_dataloader(settings.path, settings.image_size, settings.batch_size, max(int(model.stride.max()), 32), hyp=hyp, augment=True)
+    
     # Freeze
     freeze = [f"model.{x}." for x in range(0)]  # parameter names to freeze (full or partial)
     for k, v in model.named_parameters():
@@ -59,11 +61,26 @@ def train():
         if any(x in k for x in freeze):
             print("freezing %s" % k)
             v.requires_grad = False
+            
+    nl = model.model[-1].nl  # number of detection layers (used for scaling hyp['obj'])
+    model.nc = number_of_class  # attach number of classes to model
+    model.names = name_of_class
+    model.hyp = hyp  # attach hyperparameters to model
+    model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
+    model.class_weights = labels_to_class_weights(dataset.labels, number_of_class).to(device) * number_of_class  # attach class weights
+    hyp['box'] *= 3. / nl  # scale to layers
+    hyp['cls'] *= number_of_class / 80. * 3. / nl  # scale to classes and layers
+    hyp['obj'] *= (settings.image_size / 640) ** 2 * 3. / nl  # scale to image size and layers
     
     # Prepare Optimizier
     weight_decay = 0.0005 # hyper
     nbs = 64  # nominal batch size
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
+    
+    nb = len(dataloader)  # number of batches
+    nw = max(round(hyp["warmup_epochs"] * nb), 1000)
+    check_anchors(dataset, model=model, thr=settings.anchor_t, imgsz=settings.image_size)
+    model.half().float()  # pre-reduce anchor precision
     
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
     for k, v in model.named_modules():
@@ -145,23 +162,6 @@ def train():
         ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
         ema.updates = ckpt['updates']
     del ckpt, state_dict
-    
-    dataloader, dataset = create_dataloader(settings.path, settings.image_size, settings.batch_size, max(int(model.stride.max()), 32), hyp=hyp, augment=True)
-    
-    nl = model.model[-1].nl  # number of detection layers (used for scaling hyp['obj'])
-    nb = len(dataloader)  # number of batches
-    nw = max(round(hyp["warmup_epochs"] * nb), 1000)
-    check_anchors(dataset, model=model, thr=settings.anchor_t, imgsz=settings.image_size)
-    model.half().float()  # pre-reduce anchor precision
-    
-    hyp['box'] *= 3. / nl  # scale to layers
-    hyp['cls'] *= number_of_class / 80. * 3. / nl  # scale to classes and layers
-    hyp['obj'] *= (settings.image_size / 640) ** 2 * 3. / nl  # scale to image size and layers
-    model.nc = number_of_class  # attach number of classes to model
-    model.hyp = hyp  # attach hyperparameters to model
-    model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
-    model.class_weights = labels_to_class_weights(dataset.labels, number_of_class).to(device) * number_of_class  # attach class weights
-    model.names = name_of_class
     
     scheduler.last_epoch = -1
     scaler = amp.GradScaler(enabled=True)
