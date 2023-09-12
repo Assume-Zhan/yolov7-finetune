@@ -17,8 +17,8 @@ from utils.general import labels_to_class_weights, init_seeds, check_img_size, s
 from utils.loss import ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
-BATCH_SIZE = 1
-EPOCHS = 1
+BATCH_SIZE = 4
+EPOCHS = 50
 
 def train(hyp, device):
     
