@@ -11,10 +11,11 @@ import yaml
 from torch.cuda import amp
 from tqdm import tqdm
 
+import test
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, init_seeds, check_img_size, set_logging, one_cycle
+from utils.general import labels_to_class_weights, check_img_size, set_logging, one_cycle, fitness
 from utils.loss import ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
@@ -23,21 +24,9 @@ class Settings():
     def __init__(self):
         self.stride = 32
         self.path = "/yolov7/data/Aquarium/train/images"
-        self.image_size, self.imgsz_test = [check_img_size(x, self.stride) for x in [768, 1024]]
+        self.image_size, self.imgsz_test = [check_img_size(x, self.stride) for x in [640, 640]]
         self.batch_size = 1
         self.anchor_t = 4
-
-# Get dataset
-def get_dataloader(settings, stride):
-    
-    # Return dataloader, dataset
-    return create_dataloader(
-        settings.path, 
-        settings.image_size, 
-        settings.batch_size, 
-        stride,
-        augment =  True
-    )
 
 # train function
 def train():
@@ -58,12 +47,17 @@ def train():
     name_of_class = ['fish', 'jellyfish', 'penguin', 'puffin', 'shark', 'starfish', 'stingray']
     
     ckpt = torch.load(weights, map_location=device)
-    model = Model(ckpt['model'].yaml, ch = 3, nc = number_of_class, anchors = None).to(device)
-    
-    exclude = ['anchor'] # Not understand what it does
-    state_dict = ckpt['model'].float().state_dict()
-    state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)
+    model = Model("cfg/training/yolov7.yaml", ch = 3, nc = number_of_class, anchors = None).to(device)
+    state_dict = intersect_dicts(ckpt['model'].float().state_dict(), model.state_dict(), exclude=['anchor'])
     model.load_state_dict(state_dict, strict=False)
+    
+    # Freeze
+    freeze = [f"model.{x}." for x in range(0)]  # parameter names to freeze (full or partial)
+    for k, v in model.named_parameters():
+        v.requires_grad = True  # train all layers
+        if any(x in k for x in freeze):
+            print("freezing %s" % k)
+            v.requires_grad = False
     
     # Prepare Optimizier
     weight_decay = 0.0005 # hyper
@@ -151,10 +145,11 @@ def train():
         ema.updates = ckpt['updates']
     del ckpt, state_dict
     
-    dataloader, dataset = create_dataloader(settings.path, settings.image_size, settings.batch_size, settings.stride, hyp=hyp, augment=True)
+    dataloader, dataset = create_dataloader(settings.path, settings.image_size, settings.batch_size, max(int(model.stride.max()), 32), hyp=hyp, augment=True)
     
     nl = model.model[-1].nl  # number of detection layers (used for scaling hyp['obj'])
     nb = len(dataloader)  # number of batches
+    nw = max(round(hyp["warmup_epochs"] * nb), 1000)
     check_anchors(dataset, model=model, thr=settings.anchor_t, imgsz=settings.image_size)
     model.half().float()  # pre-reduce anchor precision
     
@@ -174,11 +169,22 @@ def train():
     # Start training
     for epoch in range(epochs):  # epoch ------------------------------------------------------------------
         model.train()
+        mloss = torch.zeros(4, device=device)  # mean losses
 
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in tqdm(enumerate(dataloader), total=nb):  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+
+            # warmup
+            if ni <= nw:
+                xi = [0, nw]  # x interp
+                accumulate = max(1, np.interp(ni, xi, [1, 64 / settings.batch_size]).round())
+                for j, x in enumerate(optimizer.param_groups):
+                    # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                    x["lr"] = np.interp(ni, xi, [hyp["warmup_bias_lr"] if j == 2 else 0.0, x["initial_lr"] * lf(epoch)])
+                    if "momentum" in x:
+                        x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
 
             # Forward
             with amp.autocast(enabled=True):
@@ -200,6 +206,37 @@ def train():
         scheduler.step()
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
+    
+    with open("data/AquariumDataset/data.yaml") as f:
+        data_dict = yaml.load(f, Loader=yaml.SafeLoader)
+    
+    testloader= create_dataloader("/yolov7/data/Aquarium/val/images", settings.image_size, settings.batch_size * 2, settings.stride, rect = True,
+                                            pad = 0.5)
+
+    results, maps, times = test.test(data_dict, 
+                                     batch_size=settings.batch_size * 2, 
+                                     imgsz = 640, 
+                                     model=ema.ema, 
+                                     dataloader=testloader, 
+                                     save_dir='runs/train/prune', 
+                                     verbose=True, 
+                                     plots=True, 
+                                     compute_loss=compute_loss_ota)
+    
+    
+    results_file = 'runs/train/prune'
+    mloss = (mloss * i + loss_items) / (i + 1)
+    mem = "%.3gG" % (torch.cuda.memory_reserved() / 1e9 if torch.cuda.is_available() else 0)
+    s = ("%10s" * 2 + "%10.4g" * 6) % ("%g/%g" % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
+    with open(results_file, "a") as f:
+        f.write(s + "%10.4g" * 7 % results + "\n")  # append metrics, val_loss
+
+    fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+    if fi > best_fitness:
+        best_fitness = fi
+        log = {"epoch": epoch, "best_fitness": best_fitness, "training_results": results_file.read_text(), "model": deepcopy(model).half(), "ema": deepcopy(ema.ema).half(), "updates": ema.updates, "optimizer": optimizer.state_dict(), "wandb_id": None}
+        torch.save(log, 'runs/train/prune/weight.pt')
+        del log
     
     # Save the last model
     ckpt = {
