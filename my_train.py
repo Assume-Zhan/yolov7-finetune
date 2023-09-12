@@ -1,5 +1,6 @@
 # Required Libraries
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import torch.nn as nn
@@ -15,8 +16,8 @@ import test
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, check_img_size, set_logging, one_cycle, fitness
-from utils.loss import ComputeLossOTA
+from utils.general import labels_to_class_weights, check_img_size, set_logging, one_cycle, fitness, increment_path
+from utils.loss import ComputeLossOTA, ComputeLoss
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
 # Setup hyper-parameters
@@ -165,6 +166,7 @@ def train():
     scheduler.last_epoch = -1
     scaler = amp.GradScaler(enabled=True)
     compute_loss_ota = ComputeLossOTA(model)
+    compute_loss = ComputeLoss(model)
     
     # Start training
     for epoch in range(epochs):  # epoch ------------------------------------------------------------------
@@ -207,21 +209,23 @@ def train():
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
     
-    with open("data/AquariumDataset/data.yaml") as f:
+    with open("data/Aquarium/data.yaml") as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)
     
-    testloader= create_dataloader("/yolov7/data/Aquarium/val/images", settings.image_size, settings.batch_size * 2, settings.stride, rect = True,
+    testloader, testset= create_dataloader("/yolov7/data/Aquarium/valid/images", settings.image_size, settings.batch_size * 2, settings.stride, rect = True,
                                             pad = 0.5)
+    
+    save_dir = Path(increment_path(Path("runs/train") / "prune", exist_ok=False))
 
     results, maps, times = test.test(data_dict, 
                                      batch_size=settings.batch_size * 2, 
                                      imgsz = 640, 
                                      model=ema.ema, 
-                                     dataloader=testloader, 
-                                     save_dir='runs/train/prune', 
+                                     dataloader=testloader,
                                      verbose=True, 
+                                     save_dir=save_dir,
                                      plots=True, 
-                                     compute_loss=compute_loss_ota)
+                                     compute_loss=compute_loss)
     
     
     results_file = 'runs/train/prune'
