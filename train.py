@@ -18,27 +18,23 @@ from utils.loss import ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
 BATCH_SIZE = 1
+EPOCHS = 1
 
 def train(hyp, device):
     
-    total_batch_size = batch_size = BATCH_SIZE
-    epochs = 1
-    rank = -1
-    weights = './weight/yolov7x_training.pt'
-    data_yaml = "data/Aquarium/data.yaml"
-    cfg_yaml = "cfg/training/yolov7.yaml"
+    batch_size = BATCH_SIZE
 
     # Configure
     cuda = device.type != 'cpu'
-    init_seeds(2 + rank)
-    with open(data_yaml) as f:
+    init_seeds(1)
+    with open("data/Aquarium/data.yaml") as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
 
     nc = int(data_dict['nc'])  # number of classes
     names = data_dict['names']  # class names
  
-    ckpt = torch.load(weights, map_location=device)
-    model = Model(cfg_yaml, ch=3, nc=nc).to(device)
+    ckpt = torch.load('./weight/yolov7x_training.pt', map_location=device)
+    model = Model("cfg/training/yolov7.yaml", ch=3, nc=nc).to(device)
     state_dict = intersect_dicts(ckpt['model'].float().state_dict(), model.state_dict(), exclude=['anchor'])
     model.load_state_dict(state_dict, strict=False)
     
@@ -47,7 +43,7 @@ def train(hyp, device):
 
     # Optimizer, Goal : Get a larger batch size by accumulating gradient
     nbs = 64
-    accumulate = max(round(nbs / total_batch_size), 1)
+    accumulate = max(round(nbs / batch_size), 1)
 
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
     for k, v in model.named_modules():
@@ -120,11 +116,11 @@ def train(hyp, device):
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
     del pg0, pg1, pg2
 
-    lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
+    lf = one_cycle(1, hyp['lrf'], EPOCHS)  # cosine 1->hyp['lrf']
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
 
     # EMA
-    ema = ModelEMA(model) if rank in [-1, 0] else None
+    ema = ModelEMA(model)
     if ema and ckpt.get('ema'):
         ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
         ema.updates = ckpt['updates']
@@ -152,13 +148,12 @@ def train(hyp, device):
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
 
-    # Start training
-    scheduler.last_epoch = -1  # do not move
+    scheduler.last_epoch = -1
     scaler = amp.GradScaler(enabled=cuda)
-    compute_loss_ota = ComputeLossOTA(model)  # init loss class
+    compute_loss_ota = ComputeLossOTA(model)
     
-    # Start training Epoch
-    for epoch in range(epochs):  # epoch ------------------------------------------------------------------
+    # Start training
+    for epoch in range(EPOCHS):  # epoch ------------------------------------------------------------------
         model.train()
 
         optimizer.zero_grad()
@@ -186,6 +181,18 @@ def train(hyp, device):
         scheduler.step()
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
+    
+    # Save the last model
+    ckpt = {
+        'epoch': EPOCHS,
+        'model': deepcopy(model).half(),
+        'ema': deepcopy(ema.ema).half(),
+        'updates': ema.updates,
+        'optimizer': optimizer.state_dict()
+    }
+    torch.save(ckpt, 'runs/train/prune/weight.pt')
+    del ckpt
+    
     torch.cuda.empty_cache()
 
 if __name__ == '__main__':
