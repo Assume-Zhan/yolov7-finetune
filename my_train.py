@@ -35,6 +35,8 @@ def train():
     device = 'cuda'
     epochs = 15
     
+    print("Start--")
+    
     with open("data/hyp.scratch.p5.yaml") as f:
         hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
     
