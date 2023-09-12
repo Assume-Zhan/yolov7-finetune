@@ -1,8 +1,4 @@
-import argparse
-import logging
-import os
 from copy import deepcopy
-from pathlib import Path
 
 import numpy as np
 import torch.nn as nn
@@ -17,11 +13,9 @@ from tqdm import tqdm
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, init_seeds, check_dataset, check_img_size, set_logging, one_cycle
+from utils.general import labels_to_class_weights, init_seeds, check_img_size, set_logging, one_cycle
 from utils.loss import ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
-
-logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 1
 
@@ -42,26 +36,18 @@ def train(hyp, device):
 
     nc = int(data_dict['nc'])  # number of classes
     names = data_dict['names']  # class names
-
-    # Check Model
-    assert weights.endswith('.pt'), "Model not pretrained"
-    assert Path(str(weights).strip().replace("'", '').lower()).exists(), "Model not exists"
  
-    ckpt = torch.load(weights, map_location=device)  # load checkpoint
-    model = Model(cfg_yaml or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-    exclude = ['anchor'] if (cfg_yaml or hyp.get('anchors')) else []  # exclude keys
-    state_dict = ckpt['model'].float().state_dict()  # to FP32
-    state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
-    model.load_state_dict(state_dict, strict=False)  # load
+    ckpt = torch.load(weights, map_location=device)
+    model = Model(cfg_yaml, ch=3, nc=nc).to(device)
+    state_dict = intersect_dicts(ckpt['model'].float().state_dict(), model.state_dict(), exclude=['anchor'])
+    model.load_state_dict(state_dict, strict=False)
     
-    check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
 
-    # Optimizer
-    nbs = 64  # nominal batch size
-    accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
-    hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
+    # Optimizer, Goal : Get a larger batch size by accumulating gradient
+    nbs = 64
+    accumulate = max(round(nbs / total_batch_size), 1)
 
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
     for k, v in model.named_modules():
@@ -136,20 +122,12 @@ def train(hyp, device):
 
     lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
-    # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # EMA
     ema = ModelEMA(model) if rank in [-1, 0] else None
-
-    start_epoch = 0
-
-    # EMA
     if ema and ckpt.get('ema'):
         ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
         ema.updates = ckpt['updates']
-
-    # Epochs
-    start_epoch = ckpt['epoch'] + 1
 
     del ckpt, state_dict
 
@@ -175,13 +153,12 @@ def train(hyp, device):
     model.names = names
 
     # Start training
-    nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
-    scheduler.last_epoch = start_epoch - 1  # do not move
+    scheduler.last_epoch = -1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
     compute_loss_ota = ComputeLossOTA(model)  # init loss class
     
     # Start training Epoch
-    for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
+    for epoch in range(epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
         optimizer.zero_grad()
@@ -209,9 +186,7 @@ def train(hyp, device):
         scheduler.step()
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
-        
     torch.cuda.empty_cache()
-
 
 if __name__ == '__main__':
     set_logging(-1)
