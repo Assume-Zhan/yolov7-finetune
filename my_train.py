@@ -26,14 +26,14 @@ class Settings():
         self.stride = 32
         self.path = "/yolov7/data/Aquarium/train/images"
         self.image_size, self.imgsz_test = [check_img_size(x, self.stride) for x in [640, 640]]
-        self.batch_size = 1
+        self.batch_size = 8
         self.anchor_t = 4
 
 # train function
 def train():
     weights = './weight/yolov7x_training.pt'
     device = 'cuda:0'
-    epochs = 1
+    epochs = 5
     
     with open("data/hyp.scratch.p5.yaml") as f:
         hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
