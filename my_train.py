@@ -224,27 +224,20 @@ def train():
                                      dataloader=testloader,
                                      verbose=True, 
                                      save_dir=save_dir,
-                                     plots=True, 
+                                     plots=False, 
                                      compute_loss=compute_loss)
     
-    
-    results_file = 'runs/train/prune'
     mloss = (mloss * i + loss_items) / (i + 1)
     mem = "%.3gG" % (torch.cuda.memory_reserved() / 1e9 if torch.cuda.is_available() else 0)
     s = ("%10s" * 2 + "%10.4g" * 6) % ("%g/%g" % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
-    with open(results_file, "a") as f:
-        f.write(s + "%10.4g" * 7 % results + "\n")  # append metrics, val_loss
 
     fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
-    if fi > best_fitness:
-        best_fitness = fi
-        log = {"epoch": epoch, "best_fitness": best_fitness, "training_results": results_file.read_text(), "model": deepcopy(model).half(), "ema": deepcopy(ema.ema).half(), "updates": ema.updates, "optimizer": optimizer.state_dict(), "wandb_id": None}
-        torch.save(log, 'runs/train/prune/weight.pt')
-        del log
     
     # Save the last model
     ckpt = {
         'epoch': epochs,
+        "best_fitness": fi,
+        "training_results": s + "%10.4g" * 7 % results + "\n",
         'model': deepcopy(model).half(),
         'ema': deepcopy(ema.ema).half(),
         'updates': ema.updates,
