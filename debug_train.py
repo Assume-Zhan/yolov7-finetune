@@ -19,8 +19,8 @@ from utils.general import labels_to_class_weights, init_seeds, one_cycle, fitnes
 from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
-BATCH_SIZE = 8
-EPOCHS = 20
+BATCH_SIZE = 1
+EPOCHS = 1
 
 def train():
     
@@ -54,13 +54,13 @@ def train():
     # Model parameters
     nl = model.model[-1].nl
     model.nc = nc
+    hyp['box'] *= 3. / nl
+    hyp['cls'] *= nc / 80. * 3. / nl
+    hyp['obj'] *= 3. / nl
     model.names = data_dict['names']
     model.hyp = hyp
     model.gr = 1.0
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
-    hyp['box'] *= 3. / nl
-    hyp['cls'] *= nc / 80. * 3. / nl
-    hyp['obj'] *= 3. / nl
     # hyp["label_smoothing"] = 0.0
     # hyp["weight_decay"] *= BATCH_SIZE * accumulate / 64  # scale weight_decay
 
@@ -177,15 +177,6 @@ def train():
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking = True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
-            
-            # Warmup
-            if ni <= nw:
-                xi = [0, nw]
-                accumulate = max(1, np.interp(ni, xi, [1, 64 / BATCH_SIZE]).round())
-                for j, x in enumerate(optimizer.param_groups):
-                    x["lr"] = np.interp(ni, xi, [hyp["warmup_bias_lr"] if j == 2 else 0.0, x["initial_lr"] * lf(epoch)])
-                    if "momentum" in x:
-                        x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
 
             # Forward
             with amp.autocast(enabled=cuda):
@@ -214,10 +205,11 @@ def train():
         # end epoch ----------------------------------------------------------------------------------------------------
         
         # mAP
+        # Copy model's attribute to model ema's attribute
         ema.update_attr(model, include=["yaml", "nc", "hyp", "gr", "names", "stride", "class_weights"])
         final_epoch = epoch + 1 == EPOCHS
         results, maps, times = test.test(data_dict, batch_size=BATCH_SIZE * 2, imgsz=640, model=ema.ema, 
-                                         dataloader=testloader, save_dir=save_dir, verbose=True, 
+                                         dataloader=testloader, save_dir=save_dir, verbose=final_epoch, 
                                          plots=False, compute_loss=compute_loss)
 
         # Write
