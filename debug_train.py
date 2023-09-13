@@ -178,6 +178,16 @@ def train():
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking = True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
+            # Warmup
+            if ni <= nw:
+                xi = [0, nw]
+                accumulate = max(1, np.interp(ni, xi, [1, 64 / BATCH_SIZE]).round())
+                for j, x in enumerate(optimizer.param_groups):
+                    x["lr"] = np.interp(ni, xi, [hyp["warmup_bias_lr"] if j == 2 else 0.0, x["initial_lr"] * lf(epoch)])
+                    if "momentum" in x:
+                        x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
+
+
             # Forward
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
