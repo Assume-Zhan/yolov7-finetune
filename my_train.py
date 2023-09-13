@@ -18,8 +18,8 @@ from utils.general import labels_to_class_weights, init_seeds, one_cycle, increm
 from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
-BATCH_SIZE = 8
-EPOCHS = 55
+BATCH_SIZE = 1
+EPOCHS = 1
 
 def get_file(path):
     with open(path) as f:
@@ -39,6 +39,10 @@ def get_model(model_path, cfg_path, device, hyp, nc, class_name, labels):
     state_dict = intersect_dicts(ckpt['model'].float().state_dict(), model.state_dict(), exclude=['anchor'])
     model.load_state_dict(state_dict, strict=False)
     
+    nl = model.model[-1].nl
+    hyp['box'] *= 3. / nl
+    hyp['cls'] *= nc / 80. * 3. / nl
+    hyp['obj'] *= 3. / nl
     model.nc = nc
     model.names = class_name
     model.hyp = hyp
