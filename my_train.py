@@ -39,6 +39,14 @@ def get_model(model_path, cfg_path, device, hyp, nc, class_name, labels):
     state_dict = intersect_dicts(ckpt['model'].float().state_dict(), model.state_dict(), exclude=['anchor'])
     model.load_state_dict(state_dict, strict=False)
     
+    # Freeze
+    freeze = [f"model.{x}." for x in range(0)]  # parameter names to freeze (full or partial)
+    for k, v in model.named_parameters():
+        v.requires_grad = True  # train all layers
+        if any(x in k for x in freeze):
+            print("freezing %s" % k)
+            v.requires_grad = False
+    
     nl = model.model[-1].nl
     hyp['box'] *= 3. / nl
     hyp['cls'] *= nc / 80. * 3. / nl
