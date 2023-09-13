@@ -140,7 +140,7 @@ def train():
     # Get data
     nc = int(data_dict['nc'])
     dataloader, dataset = get_data(data_dict['train'], 640, BATCH_SIZE, augment=True, hyp=hyp_dict, rect=False, pad=0.0)
-    testloader = get_data(data_dict['val'], 640, BATCH_SIZE * 2, augment=True, hyp=hyp_dict, rect=True, pad=0.5)[0]
+    testloader = get_data(data_dict['val'], 640, BATCH_SIZE * 2, augment=False, hyp=hyp_dict, rect=True, pad=0.5)[0]
     
     # Get model
     ckpt, model = get_model('./weight/yolov7x_training.pt', "cfg/training/yolov7.yaml", device, 
