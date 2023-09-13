@@ -157,6 +157,7 @@ def train():
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
     
     # Get optimizer
+    accumulate = max(round(64 / BATCH_SIZE), 1)
     optimizer = get_optimizer(model, hyp_dict)
     
     # LR scheduler
@@ -200,16 +201,6 @@ def train():
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch
             imgs = imgs.to(device, non_blocking = True).float() / 255.0
-
-            # Warmup
-            if ni <= nw:
-                xi = [0, nw]
-                accumulate = max(1, np.interp(ni, xi, [1, 64 / BATCH_SIZE]).round())
-                for j, x in enumerate(optimizer.param_groups):
-                    x["lr"] = np.interp(ni, xi, [hyp_dict["warmup_bias_lr"] if j == 2 else 0.0, x["initial_lr"] * lf(epoch)])
-                    if "momentum" in x:
-                        x["momentum"] = np.interp(ni, xi, [hyp_dict["warmup_momentum"], hyp_dict["momentum"]])
-
 
             # Forward
             with amp.autocast(enabled=cuda):
