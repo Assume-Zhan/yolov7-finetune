@@ -20,11 +20,11 @@ from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
 BATCH_SIZE = 8
-EPOCHS = 10
+EPOCHS = 55
 
 def train():
     
-    print("debug training")
+    print(f"debug training with {EPOCHS} epochs")
     
     # Configuration
     batch_size = BATCH_SIZE
