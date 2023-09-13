@@ -3,7 +3,6 @@ from pathlib import Path
 
 import numpy as np
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.utils.data
@@ -15,7 +14,7 @@ import test
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, init_seeds, one_cycle, fitness, increment_path
+from utils.general import labels_to_class_weights, init_seeds, one_cycle, increment_path
 from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
