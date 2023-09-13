@@ -24,6 +24,8 @@ EPOCHS = 20
 
 def train():
     
+    print("debug training")
+    
     # Configuration
     batch_size = BATCH_SIZE
     device = select_device('0', batch_size = BATCH_SIZE)
@@ -159,8 +161,9 @@ def train():
     testloader, testset = create_dataloader(data_dict['val'], 640, batch_size * 2, 32, hyp=hyp, augment=True, pad = 0.5, rect = True)
     
     save_dir = Path(increment_path(Path("/yolov7/runs/train") / "exp", exist_ok=False))
-    results_file = save_dir / "results.txt"
+    save_dir.mkdir(parents=True, exist_ok=True)  # make dir
     weight_pt = save_dir / "weight.pt"
+    results_file = save_dir / "results.txt"
     
     # Start training
     for epoch in range(EPOCHS):  # epoch ------------------------------------------------------------------
@@ -214,8 +217,8 @@ def train():
         ema.update_attr(model, include=["yaml", "nc", "hyp", "gr", "names", "stride", "class_weights"])
         final_epoch = epoch + 1 == EPOCHS
         results, maps, times = test.test(data_dict, batch_size=BATCH_SIZE * 2, imgsz=640, model=ema.ema, 
-                                         dataloader=testloader, save_dir=save_dir, verbose=final_epoch, 
-                                         plots=final_epoch, compute_loss=compute_loss)
+                                         dataloader=testloader, save_dir=save_dir, verbose=True, 
+                                         plots=False, compute_loss=compute_loss)
 
         # Write
         with open(results_file, "a") as f:
