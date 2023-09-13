@@ -146,6 +146,16 @@ def train():
     ckpt, model = get_model('./weight/yolov7x_training.pt', "cfg/training/yolov7.yaml", device, 
                       hyp=hyp_dict, nc=nc, class_name = data_dict['names'], labels=dataset.labels)
     
+    nl = model.model[-1].nl
+    model.nc = nc
+    hyp_dict['box'] *= 3. / nl
+    hyp_dict['cls'] *= nc / 80. * 3. / nl
+    hyp_dict['obj'] *= 3. / nl
+    model.names = data_dict['names']
+    model.hyp = hyp_dict
+    model.gr = 1.0
+    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
+    
     # Get optimizer
     optimizer = get_optimizer(model, hyp_dict)
     
@@ -158,7 +168,6 @@ def train():
     if ema and ckpt.get('ema'):
         ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
         ema.updates = ckpt['updates']
-    del ckpt
 
     # Data and Weight Settings
     nb = len(dataloader)
@@ -170,6 +179,8 @@ def train():
     # Loss Functions
     compute_loss_ota = ComputeLossOTA(model)
     compute_loss = ComputeLoss(model)
+    
+    del ckpt
     
     # Result Log
     save_dir = Path(increment_path(Path("/yolov7/runs/train") / "exp", exist_ok=False))
