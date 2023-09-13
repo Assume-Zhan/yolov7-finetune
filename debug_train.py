@@ -19,8 +19,8 @@ from utils.general import labels_to_class_weights, init_seeds, one_cycle, fitnes
 from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts
 
-BATCH_SIZE = 1
-EPOCHS = 1
+BATCH_SIZE = 8
+EPOCHS = 10
 
 def train():
     
